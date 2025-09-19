@@ -1,15 +1,15 @@
-// server.js - ESM
+// --------- server.js ----------
 import express from "express";
 import axios from "axios";
 import cors from "cors";
 import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
-import { PDFDocument } from "pdf-lib"; // try pdf-lib first
+import { PDFDocument } from "pdf-lib"; 
 dotenv.config();
 const app = express();
 
-// ---------- Config ----------
+// ---------- Configuration ----------
 const PORT = process.env.PORT || 3000;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-pro";
@@ -19,7 +19,7 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:5500,h
 const AXIOS_TIMEOUT = parseInt(process.env.AXIOS_TIMEOUT_MS || "180000", 10);
 
 // ---------- Middlewares ----------
-app.use(express.json({ limit: "6mb" })); // allow base64 resumes
+app.use(express.json({ limit: "6mb" })); 
 app.use(morgan("dev"));
 app.use(cors({
   origin: function (origin, callback) {
@@ -41,44 +41,36 @@ function maskKey(k) {
   return k.slice(0, 4) + "..." + k.slice(-4);
 }
 
-// Try extracting text with pdf-lib (best-effort). If no text, fallback to pdf-parse buffer parsing.
+// ------- buffer parsing ---------
 async function extractPdfTextBestEffort(buffer) {
   try {
-    // Try pdf-lib extraction (pdf-lib doesn't reliably extract text for all PDFs,
-    // but attempt it first to honor your request)
+   
     try {
       const pdfDoc = await PDFDocument.load(buffer);
       let text = "";
       const pages = pdfDoc.getPages();
-      // pdf-lib does not expose a robust getTextContent API; attempt to read
-      // text via page.getTextContent if present (some builds/environments may not have it).
       for (const page of pages) {
-        // defensive: some environments/plugins may add getTextContent - call if exists
         if (typeof page.getTextContent === "function") {
           try {
             const content = await page.getTextContent();
             if (content && typeof content.items !== "undefined") {
               const pageText = (content.items || []).map(i => {
                 if (typeof i.str === "string") return i.str;
-                // fallback for other shapes
                 return String(i).replace(/\s+/g, " ");
               }).join(" ");
               text += pageText + "\n";
             }
-          } catch (e) {
-            // ignore; we'll fallback below
+          } catch (e) { 
           }
         }
       }
       if (typeof text === "string" && text.trim().length > 10) {
         return text.replace(/\s+/g, " ").trim();
       }
-      // If pdf-lib didn't yield good text, fall through to pdf-parse fallback
     } catch (e) {
-      // ignore and fallback
     }
 
-    // fallback: dynamic import pdf-parse and parse the buffer directly (no filesystem)
+    // --------- Imports dynamically pdf-parse and parse the buffer directly ----------
     try {
       const mod = await import("pdf-parse");
       const pdfParse = mod.default || mod;
@@ -90,33 +82,28 @@ async function extractPdfTextBestEffort(buffer) {
       console.warn("pdf-parse fallback failed:", e?.message || e);
     }
 
-    // last fallback: try to decode utf8 text (some text PDFs may be extractable this way)
+    // ----------- trying to decode some text which pdf contains -----------
     try {
       const maybeText = buffer.toString("utf8");
       if (maybeText && maybeText.length > 20) {
         return maybeText.replace(/\s+/g, " ").trim().slice(0, 20000);
       }
     } catch (e) {
-      // ignore
     }
 
-    return ""; // could not extract
+    return ""; 
   } catch (err) {
     console.warn("extractPdfTextBestEffort error:", err?.message || err);
     return "";
   }
 }
 
-// ---------- Helpers (add these near other helpers) ----------
+// ---------- Helpers ----------
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/**
- * Post to Gemini endpoint with simple retry/backoff for transient (5xx/503) errors.
- * Attempts: totalAttempts (default 3). Waits `retryDelayMs` between attempts.
- * Throws the final axios error if all attempts fail.
- */
+// --------- Post to Gemini endpoint with simple retry or backoff for transient errors ----------
 async function geminiPostWithRetries(url, payload, opts = {}) {
   const totalAttempts = typeof opts.attempts === 'number' ? opts.attempts : 3;
   const retryDelayMs = typeof opts.delayMs === 'number' ? opts.delayMs : 2000;
@@ -128,31 +115,27 @@ async function geminiPostWithRetries(url, payload, opts = {}) {
       return r;
     } catch (e) {
       lastErr = e;
-      // If axios has a response, check status
+      // --------- If axios has a response then check status ----------
       const status = e.response && e.response.status ? e.response.status : null;
       const dataMsg = e.response && e.response.data ? JSON.stringify(e.response.data).slice(0,1200) : '';
 
-      // If it's a client error (4xx) do not retry
+      // ---------- If it's a client error do not retry ---------
       if (status && status >= 400 && status < 500 && status !== 429) {
-        // 429 (rate limit) could be retried, but treat it like transient below if you want.
         throw e;
       }
 
-      // If this is the last attempt, break and rethrow below
+      // ----------- If this is the last attempt then break and rethrow below -----------
       if (attempt === totalAttempts) break;
-
-      // Log and wait before retrying
       console.warn(`Gemini call attempt ${attempt} failed (${status || e.code || e.message}). Retrying in ${retryDelayMs}ms...`, dataMsg);
       await sleep(retryDelayMs);
-      // continue to next attempt
     }
   }
 
-  // All attempts failed - throw the last error (preserve shape)
+  // ---------If all attempts failed then throw the last error ----------
   throw lastErr;
 }
 
-// GitHub link summary helper
+// --------- GitHub link summary helper -----------
 async function fetchGitHubSummary(gitUrl) {
   try {
     const u = new URL(gitUrl);
@@ -160,7 +143,7 @@ async function fetchGitHubSummary(gitUrl) {
     const parts = u.pathname.split("/").filter(Boolean);
     if (parts.length === 0) return "";
 
-    // Username only
+    // --------- Username only ----------
     if (parts.length === 1) {
       const username = parts[0];
       const reposResp = await axios.get(`https://api.github.com/users/${username}/repos?per_page=5&sort=pushed`, { timeout: AXIOS_TIMEOUT });
@@ -179,7 +162,7 @@ async function fetchGitHubSummary(gitUrl) {
       return collected;
     }
 
-    // /owner/repo
+    // --------- owner repo ---------
     if (parts.length >= 2) {
       const owner = parts[0], repo = parts[1];
       try {
@@ -216,12 +199,12 @@ app.post("/api/gemini", async (req, res) => {
   try {
     if (!GEMINI_API_KEY) return res.status(500).json({ error: "Missing GEMINI_API_KEY" });
 
-    // Accept `prompt` (string) and optional `model` in the request body.
+    // ------- Accept `prompt` and optional `model` in the request body -----------
     let clientPrompt = req.body?.prompt || "";
     clientPrompt = sanitizeText(clientPrompt);
     if (!clientPrompt) return res.status(400).json({ error: "Empty prompt" });
 
-    // Allow safe model override from frontend: only allow these two models
+    // ---------- Allow safe model override from frontend ------------
     const allowedModels = new Set(["gemini-2.5-pro", "gemini-2.5-flash"]);
     let modelToUse = String(req.body?.model || MODEL || "gemini-2.5-pro").trim();
     if (!allowedModels.has(modelToUse)) {
@@ -231,7 +214,7 @@ app.post("/api/gemini", async (req, res) => {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelToUse}:generateContent?key=${GEMINI_API_KEY}`;
     const payload = { contents: [{ role: "user", parts: [{ text: clientPrompt }] }] };
 
-    // use retries wrapper
+    // ---------- use retries wrapper -----------
    const r = await geminiPostWithRetries(endpoint, payload, { attempts: 3, delayMs: 3000 });
    const text = r.data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
    return res.json({ reply: text });
@@ -249,31 +232,27 @@ app.post("/api/gemini", async (req, res) => {
   }
 });
 
-/* ---------------------------------------------------------------------------
-   /api/uploadResume  (direct buffer parsing, returns only extractedText/resumeSummary)
---------------------------------------------------------------------------- */
+// ---------- returns only the extracted text from resume summary ------------
 app.post("/api/uploadResume", async (req, res) => {
   try {
     if (!GEMINI_API_KEY) {
-      // still allow extraction even if no key — we return extracted text so frontend can call gemini
-      // but we signal key missing for downstream calls
+      // --------- we return extracted text so frontend can call gemini -----------
       console.warn("Warning: GEMINI_API_KEY not set");
     }
     const { filename, mime, dataURL, answers } = req.body || {};
     const resume_or_link = answers?.resume_or_link || "";
 
-    // If user provided a URL (GitHub), fetch summary via server and return it
+    // ---------- If user provids a GitHub Url then fetch summary via server and return it ----------
     if ((!filename || !dataURL) && resume_or_link && /^https?:\/\//i.test(resume_or_link)) {
       if (resume_or_link.toLowerCase().includes("github.com")) {
         const ghSummary = await fetchGitHubSummary(resume_or_link);
-        // IMPORTANT: we only return extracted summary — frontend will call /api/gemini with prompt
         return res.json({ source: "github", resumeSummary: ghSummary || "", extractedText: "" });
       }
-      // LinkedIn scraping intentionally not supported for TOS reasons
+      // ----------- LinkedIn scraping intentionally not supported for TOS reasons -----------
       return res.status(400).json({ error: "LinkedIn scraping not supported. Please paste profile text or upload resume." });
     }
 
-    // File upload path
+    // ------------ File upload path ------------
     if (!filename || !dataURL) return res.status(400).json({ error: "Missing file" });
     const m = String(dataURL).match(/^data:(.+);base64,(.+)$/);
     if (!m) return res.status(400).json({ error: "Invalid dataURL" });
@@ -288,12 +267,12 @@ app.post("/api/uploadResume", async (req, res) => {
       isBuffer: Buffer.isBuffer(fileBuffer)
     });
 
-    // Extract text (best-effort: pdf-lib first, fallback to pdf-parse buffer)
+    // ----------- Extract text ----------
     let extractedText = "";
     if (fileMime.includes("pdf") || filename.toLowerCase().endsWith(".pdf")) {
       extractedText = await extractPdfTextBestEffort(fileBuffer);
     } else {
-      // simple docx/doc fallback: try to decode plain text (frontend should send plain text if possible)
+      // ----------- Trying to decode plain text so that frontend should send plain text if possible -----------
       try {
         extractedText = fileBuffer.toString("utf8");
       } catch (e) {
@@ -303,8 +282,7 @@ app.post("/api/uploadResume", async (req, res) => {
 
     const extractedTrim = String(extractedText || "").slice(0, 15000);
 
-    // Summarize resume using Gemini only if we have the key available; but the frontend will
-    // still be responsible for final suggestion generation. We return resumeSummary to client.
+    // ----------- Summarize resume using Gemini only if we have the key available -----------
     let resumeSummary = "";
     if (extractedTrim) {
       const summarizationPrompt = `Summarize this resume into 3–6 sentences. Include name, current title, years experience, key skills, and top projects. Max 120 words.\n\n${extractedTrim}`;
@@ -317,7 +295,7 @@ app.post("/api/uploadResume", async (req, res) => {
                );
            resumeSummary = sumResp.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
         } else {
-          // If no Gemini key on server, just return a simple truncated excerpt as summary (frontend can call gemini)
+          // -------- If no Gemini key on server then just return a simple truncated excerpt as summary ----------
           resumeSummary = extractedTrim.slice(0, 600);
         }
       } catch (e) {
@@ -326,7 +304,7 @@ app.post("/api/uploadResume", async (req, res) => {
       }
     }
 
-    // IMPORTANT: only return extractedText and resumeSummary (frontend will call /api/gemini for suggestions)
+    // ----------- only return extractedText and resumeSummary where frontend will call Gemini API for suggestions -------------
     return res.json({ source: "upload", resumeSummary, extractedText: extractedTrim });
   } catch (err) {
     console.error("uploadResume error:", err?.message || err);
@@ -340,9 +318,7 @@ app.post("/api/uploadResume", async (req, res) => {
   }
 });
 
-/* ---------------------------------------------------------------------------
-   /api/skillGap
---------------------------------------------------------------------------- */
+// ----------- Skill Gap Analysis -----------------
 app.post("/api/skillGap", async (req, res) => {
   try {
     if (!GEMINI_API_KEY) return res.status(500).json({ error: "Missing GEMINI_API_KEY" });
